@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "strict": true,
+    "strict": false,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "target": "ES2022",

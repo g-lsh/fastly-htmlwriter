@@ -5,7 +5,7 @@
 // import { Logger } from "fastly:logger";
 import { env } from "fastly:env";
 import { includeBytes } from "fastly:experimental";
-import {HTMLRewritingStream} from "fastly:html-rewriter";
+import {type Element, HTMLRewritingStream} from "fastly:html-rewriter";
 
 // Load a static file as a Uint8Array at compile time.
 // File path is relative to root of project, not to this file
@@ -17,6 +17,13 @@ import {HTMLRewritingStream} from "fastly:html-rewriter";
 // could be used to route based on the request properties (such as method or
 // path), send the request to a backend, make completely new requests, and/or
 // generate synthetic responses.
+
+// Utility to escape HTML
+const escapeHtml = (s = "") =>
+    s.replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+
 
 addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
 
@@ -86,16 +93,55 @@ async function handleRequest(event: FetchEvent) {
       // });
 
 
+      const pageState = {description: ""}
+      let titleSeen = false;
+
       if (response.ok && response.body) {
-          let transformer = new HTMLRewritingStream()
-              .onElement("title", e => {
-                  const content = e.getAttribute("content")
-                  e.prepend("Added title")
+          // Need to fully buffer the HTML to make two passes
+          const html = await response.text();
+
+          const resForPass1 = new Response(html, {
+              headers: { "content-type": "text/html; charset=utf-8" }
+          })
+
+          console.log("====== HTML =====", html.slice(0, 200));
+
+          let extractorStreamer = new HTMLRewritingStream()
+              .onElement('meta[name="description"]', (el: Element) => {
+                  if (pageState.description) return;
+                  const content = (el.getAttribute("content") || "").trim();
+                  if (content) pageState.description = content;
               })
-              .onElement("div", e => {
-                  e.setAttribute("special-attribute", "top-secret")
-              });
-          let body = response.body.pipeThrough(transformer);
+              // .onElement("title", e => {
+              //     const content = e.getAttribute("content")
+              //     e.prepend("Added title")
+              // })
+              // .onElement("div", e => {
+              //     e.setAttribute("special-attribute", "top-secret")
+              // });
+
+          const rewritingStreamer = new HTMLRewritingStream()
+              .onElement("title", (el: Element) => {
+                  titleSeen = true;
+                  if (pageState.description) {
+                      el.replaceChildren(pageState.description, { escapeHTML: true });
+                  }
+              })
+              .onElement("head", (el) => {
+                  // inject <title> if missing
+                  if (pageState.description && !titleSeen) {
+                      const safeTitle = escapeHtml(pageState.description);
+                      el.append(`<title>${safeTitle}</title>`, { escapeHTML: false });
+                      titleSeen = true;
+                  }
+              })
+
+          await resForPass1.body.pipeThrough(extractorStreamer).pipeTo(new WritableStream()); // drain the stream to trigger processing
+
+          // Now do a new stream for pass 2
+          const resForPass2 = new Response(html)
+
+          let body = resForPass2.body.pipeThrough(rewritingStreamer);
           return new Response(body, {
               status: 200,
               headers: response.headers
