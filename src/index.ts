@@ -20,8 +20,6 @@ import {HTMLRewritingStream} from "fastly:html-rewriter";
 
 addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
 
-const testUrl = "https://fr.ulule.com/"
-
 async function handleRequest(event: FetchEvent) {
   // Log service version
   console.log("FASTLY_SERVICE_VERSION:", env('FASTLY_SERVICE_VERSION') || 'local');
@@ -71,14 +69,32 @@ async function handleRequest(event: FetchEvent) {
       // const logger = new Logger("my_endpoint");
       // logger.log("Hello from the edge!");
 
-      let response = await fetch("https://fr.ulule.com/", {
-          backend: "ulule",
+      // let response = await fetch("https://fr.ulule.com/", {
+      //     backend: "ulule",
+      // });
+
+      let response = await fetch("http://localhost:8080", {
+          backend: "pageworkers-local",
       });
+
+      // let response = await fetch("https://pageworkers-demo.ftl.page", {
+      //     backend: "pageworkers-demo",
+      //     headers: {
+      //         "User-Agent":
+      //             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36",
+      //     },
+      // });
+
 
       if (response.ok && response.body) {
           let transformer = new HTMLRewritingStream()
-              .onElement("title", e => e.prepend("Added title"))
-              .onElement("div", e => e.setAttribute("special-attribute", "top-secret"));
+              .onElement("title", e => {
+                  const content = e.getAttribute("content")
+                  e.prepend("Added title")
+              })
+              .onElement("div", e => {
+                  e.setAttribute("special-attribute", "top-secret")
+              });
           let body = response.body.pipeThrough(transformer);
           return new Response(body, {
               status: 200,
@@ -89,15 +105,30 @@ async function handleRequest(event: FetchEvent) {
       }
   }
 
-    // Send a default synthetic response.
-    return new Response("TEST", {
-      status: 308,
+    return new Response(req.url, {
+        status: 308,
         headers: {
-            Location: "https://fr.ulule.com" + url.pathname
+            Location: "http://localhost:8080" + url.pathname
         },
     });
 
-  // // Catch all other requests and return a 404.
+    // return new Response(req.url, {
+    //     status: 308,
+    //     headers: {
+    //         Location: "https://pageworkers-demo.ftl.page" + url.pathname
+    //     },
+    // });
+
+    // Send a default synthetic response.
+    // return new Response(req.url, {
+    //   status: 308,
+    //     headers: {
+    //         Location: "https://fr.ulule.com" + url.pathname
+    //     },
+    // });
+
+
+    // // Catch all other requests and return a 404.
   // return new Response("The page you requested could not be found", {
   //   status: 404,
   // });

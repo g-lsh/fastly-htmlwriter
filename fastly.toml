@@ -15,8 +15,11 @@ service_id = "5aUsDlK6vnBLDyNDhVTMnM"
   build = "npm run build"
   post_init = "npm install"
 
-[backends]
-    name = "ulule"
-    address = "fr.ulule.com"
-    port = 443
-    use_ssl = true
+[local_server.backends.ulule]
+    url = "https://fr.ulule.com"
+
+[local_server.backends.pageworkers-demo]
+    url = "https://pageworkers-demo.ftl.page"
+
+[local_server.backends.pageworkers-local]
+    url = "http://localhost:8080"
