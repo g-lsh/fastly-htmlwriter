@@ -56,6 +56,9 @@ function monitorStream(stream, onDone) {
 
 const engine = new Liquid();
 
+
+
+
 async function handleRequest(event: FetchEvent) {
   // Log service version
   // console.log("FASTLY_SERVICE_VERSION:", env('FASTLY_SERVICE_VERSION') || 'local');
@@ -138,11 +141,52 @@ async function handleRequest(event: FetchEvent) {
           // Need to "clone" the body stream for two passes
           const [body1, body2] = response.body.tee();
 
+
+          let extractedBlogIntro = '';
+          let capture = false;
+
+          // Stream to extract HTML content from page
+          const captureStream = new TransformStream({
+              transform(chunk, controller) {
+                  const text = new TextDecoder().decode(chunk);
+
+                  if (!capture && text.includes("__EXTRACT_START__")) {
+                      capture = true;
+                      // Start capturing after the start marker
+                      const startIndex = text.indexOf("__EXTRACT_START__") + "__EXTRACT_START__".length;
+                      extractedBlogIntro += text.slice(startIndex);
+                  } else if (capture) {
+                      if (text.includes("__EXTRACT_END__")) {
+                          // Stop capturing at the end marker
+                          const endIndex = text.indexOf("__EXTRACT_END__");
+                          extractedBlogIntro += text.slice(0, endIndex);
+                          capture = false;
+                      } else {
+                          extractedBlogIntro += text;
+                      }
+                  }
+
+                  controller.enqueue(chunk); // pass chunk downstream unchanged
+              }
+          });
+
           let extractorStreamer = new HTMLRewritingStream()
               .onElement('meta[name="description"]', (el: Element) => {
                   if (pageState.description) return;
                   const content = (el.getAttribute("content") || "").trim();
                   if (content) pageState.description = content;
+              })
+              .onElement(".blog-intro", (el: Element) => {
+                  console.log("BLOG INTRO ELEMENT FOUND");
+                  const now = performance.now();
+                  if (!firstRewriteTime) firstRewriteTime = now;
+
+                  // Mark this element for extraction
+                  const extractStart = "__EXTRACT_START__";
+                  const extractEnd = "__EXTRACT_END__";
+
+                  el.prepend(extractStart, { escapeHTML: false });
+                  el.append(extractEnd, { escapeHTML: false })
               })
 
 
@@ -189,16 +233,25 @@ async function handleRequest(event: FetchEvent) {
               .onElement("body", (el: Element) => {
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
-                  el.append(renderedTemplate, {escapeHTML: false});
+                  el.append(renderedTemplate, { escapeHTML: false });
                   lastRewriteTime = performance.now();
+              })
+              .onElement(".blog-intro", (el: Element) => {
+                    const now = performance.now();
+                    if (!firstRewriteTime) firstRewriteTime = now;
+
+                    const newContent = `Modified intro: ${extractedBlogIntro}`;
+                    el.replaceChildren(newContent, { escapeHTML: false });
+                    lastRewriteTime = performance.now()
               })
 
           console.log("[htmlrewriter] Begin extraction pass");
           const t2 = performance.now();
-          await body1.pipeThrough(extractorStreamer).pipeTo(new WritableStream()); // drain the stream to trigger processing
+          await body1.pipeThrough(extractorStreamer).pipeThrough(captureStream).pipeTo(new WritableStream()); // drain the stream to trigger processing
           console.log("[htmlrewriter] Completed extraction pass in", performance.now() - t2, "ms");
           console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
+          console.log("[htmlrewriter] Extracted blog intro HTML:", extractedBlogIntro);
 
           // Now do a new stream for writing
           // let body = body2.pipeThrough(rewritingStreamer);
