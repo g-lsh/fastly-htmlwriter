@@ -27,15 +27,34 @@ const escapeHtml = (s = "") =>
 
 addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
 
+
+function monitorStream(stream, onDone) {
+    const reader = stream.getReader();
+    return new ReadableStream({
+        async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) {
+                onDone();              // <-- fires exactly once when stream closes
+                controller.close();
+                return;
+            }
+            controller.enqueue(value);
+        },
+    });
+}
+
+
 async function handleRequest(event: FetchEvent) {
   // Log service version
-  console.log("FASTLY_SERVICE_VERSION:", env('FASTLY_SERVICE_VERSION') || 'local');
+  // console.log("FASTLY_SERVICE_VERSION:", env('FASTLY_SERVICE_VERSION') || 'local');
+  const t0 = performance.now()
 
   // Get the client request.
   let req = event.request;
 
   // Filter requests that have unexpected methods.
   if (!["HEAD", "GET", "PURGE"].includes(req.method)) {
+    console.log(`[htmlrewriter] fatal error - total time`, performance.now() - t0, "ms");
     return new Response("This method is not allowed", {
       status: 405,
     });
@@ -76,35 +95,21 @@ async function handleRequest(event: FetchEvent) {
       // const logger = new Logger("my_endpoint");
       // logger.log("Hello from the edge!");
 
-      // let response = await fetch("https://fr.ulule.com/", {
-      //     backend: "ulule",
-      // });
-
+      console.log("[htmlrewriter] Starting fetch to backend");
+      const t1 = performance.now();
       let response = await fetch("http://localhost:8080", {
           backend: "pageworkers-local",
       });
-
-      // let response = await fetch("https://pageworkers-demo.ftl.page", {
-      //     backend: "pageworkers-demo",
-      //     headers: {
-      //         "User-Agent":
-      //             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36",
-      //     },
-      // });
-
+      console.log("[htmlrewriter] Completed fetch to backend in", performance.now() - t1, "ms");
+      console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
       const pageState = {description: ""}
       let titleSeen = false;
+      const linkStats = { linksModified: 0, linksAlreadySuffixed: 0 };
 
       if (response.ok && response.body) {
-          // Need to fully buffer the HTML to make two passes
-          const html = await response.text();
-
-          const resForPass1 = new Response(html, {
-              headers: { "content-type": "text/html; charset=utf-8" }
-          })
-
-          console.log("====== HTML =====", html.slice(0, 200));
+          // Need to "clone" the body stream for two passes
+          const [body1, body2] = response.body.tee();
 
           let extractorStreamer = new HTMLRewritingStream()
               .onElement('meta[name="description"]', (el: Element) => {
@@ -112,45 +117,78 @@ async function handleRequest(event: FetchEvent) {
                   const content = (el.getAttribute("content") || "").trim();
                   if (content) pageState.description = content;
               })
-              // .onElement("title", e => {
-              //     const content = e.getAttribute("content")
-              //     e.prepend("Added title")
-              // })
-              // .onElement("div", e => {
-              //     e.setAttribute("special-attribute", "top-secret")
-              // });
 
+
+          let firstRewriteTime = 0;
+          let lastRewriteTime = 0;
           const rewritingStreamer = new HTMLRewritingStream()
               .onElement("title", (el: Element) => {
+                  const now = performance.now();
+                  if (!firstRewriteTime) firstRewriteTime = now;
                   titleSeen = true;
                   if (pageState.description) {
                       el.replaceChildren(pageState.description, { escapeHTML: true });
                   }
+                  lastRewriteTime = performance.now();
               })
               .onElement("head", (el) => {
                   // inject <title> if missing
+                  const now = performance.now();
+                  if (!firstRewriteTime) firstRewriteTime = now;
                   if (pageState.description && !titleSeen) {
                       const safeTitle = escapeHtml(pageState.description);
                       el.append(`<title>${safeTitle}</title>`, { escapeHTML: false });
                       titleSeen = true;
                   }
+                  lastRewriteTime = performance.now();
+              })
+              .onElement("a", (el: Element) => {
+                  const now = performance.now();
+                  if (!firstRewriteTime) firstRewriteTime = now;
+
+                  const href = el.getAttribute("href");
+                  if(!href) return;
+                  const raw = href.trim()
+
+                  if(raw.endsWith("#link")) {
+                      linkStats.linksAlreadySuffixed++;
+                      return
+                  }
+                  linkStats.linksModified++;
+                  el.setAttribute("href", raw + "#link");
+                  el.replaceChildren("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.", {escapeHTML: false});
+                  lastRewriteTime = performance.now();
               })
 
-          await resForPass1.body.pipeThrough(extractorStreamer).pipeTo(new WritableStream()); // drain the stream to trigger processing
+          console.log("[htmlrewriter] Begin extraction pass");
+          const t2 = performance.now();
+          await body1.pipeThrough(extractorStreamer).pipeTo(new WritableStream()); // drain the stream to trigger processing
+          console.log("[htmlrewriter] Completed extraction pass in", performance.now() - t2, "ms");
+          console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
-          // Now do a new stream for pass 2
-          const resForPass2 = new Response(html)
 
-          let body = resForPass2.body.pipeThrough(rewritingStreamer);
-          return new Response(body, {
+          // Now do a new stream for writing
+          // let body = body2.pipeThrough(rewritingStreamer);
+          const t3 = performance.now();
+          const monitoredBody = monitorStream(
+              body2.pipeThrough(rewritingStreamer),
+              () => {
+                  console.log("[htmlrewriter] Rewrite stream fully finished in", performance.now() - t3, "ms")
+                  console.log("[htmlrewriter] Links modified:", linkStats.linksModified);
+                  console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
+                  console.log("[htmlrewriter] Time to rewrite as computed by granular timers", lastRewriteTime - firstRewriteTime, "ms after rewrite start");
+              }
+          );
+
+          const res =  new Response(monitoredBody, {
               status: 200,
               headers: response.headers
           });
+          return res
       } else {
           return new Response("Error fetching from backend", {status: 404})
       }
   }
-
     return new Response(req.url, {
         status: 308,
         headers: {
