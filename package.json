@@ -2,7 +2,8 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@fastly/js-compute": "^3.33.2"
+    "@fastly/js-compute": "^3.33.2",
+    "liquidjs": "^10.24.0"
   },
   "devDependencies": {
     "@fastly/cli": "^12.1.0",

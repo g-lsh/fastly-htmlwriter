@@ -6,6 +6,7 @@
 import { env } from "fastly:env";
 import { includeBytes } from "fastly:experimental";
 import {type Element, HTMLRewritingStream} from "fastly:html-rewriter";
+import { Liquid } from 'liquidjs'
 
 // Load a static file as a Uint8Array at compile time.
 // File path is relative to root of project, not to this file
@@ -24,6 +25,16 @@ const escapeHtml = (s = "") =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
     );
 
+const EXAMPLE_TEMPLATE = `<ul>
+{%- for person in people %}
+  <li>
+    <a href="{{person | prepend: "https://example.com/"}}">
+      {{ person | capitalize }}
+    </a>
+  </li>
+{%- endfor%}
+</ul>
+`
 
 addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
 
@@ -43,6 +54,7 @@ function monitorStream(stream, onDone) {
     });
 }
 
+const engine = new Liquid();
 
 async function handleRequest(event: FetchEvent) {
   // Log service version
@@ -64,6 +76,7 @@ async function handleRequest(event: FetchEvent) {
 
   // If request is to the `/` path...
   if (url.pathname == "/") {
+
       // Below are some common patterns for Fastly Compute services using JavaScript.
       // Head to https://developer.fastly.com/learning/compute/javascript/ to discover more.
 
@@ -102,6 +115,20 @@ async function handleRequest(event: FetchEvent) {
       });
       console.log("[htmlrewriter] Completed fetch to backend in", performance.now() - t1, "ms");
       console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
+
+
+      console.log("[htmlrewriter] Starting template rendering");
+      const tempRenderStart = performance.now();
+      const tpl = engine.parse(EXAMPLE_TEMPLATE)
+      const templateContext = {
+          "people": [
+              "alice",
+              "bob",
+              "carol"
+          ]
+      }
+      const renderedTemplate = await engine.render(tpl, templateContext)
+      console.log("[htmlrewriter] Completed template rendering in", performance.now() - tempRenderStart, "ms");
 
       const pageState = {description: ""}
       let titleSeen = false;
@@ -157,6 +184,12 @@ async function handleRequest(event: FetchEvent) {
                   linkStats.linksModified++;
                   el.setAttribute("href", raw + "#link");
                   el.replaceChildren("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.", {escapeHTML: false});
+                  lastRewriteTime = performance.now();
+              })
+              .onElement("body", (el: Element) => {
+                  const now = performance.now();
+                  if (!firstRewriteTime) firstRewriteTime = now;
+                  el.append(renderedTemplate, {escapeHTML: false});
                   lastRewriteTime = performance.now();
               })
 
