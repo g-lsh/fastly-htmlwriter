@@ -36,6 +36,12 @@ const EXAMPLE_TEMPLATE = `<ul>
 </ul>
 `
 
+const INSERT_VARIABLE_TEMPLATE = `<div class="inserted-variable">
+  <p>This is an inserted variable content.</p>
+  <p>Description: {{ introBody }}</p>
+</div>
+`
+
 addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
 
 
@@ -120,18 +126,16 @@ async function handleRequest(event: FetchEvent) {
       console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
 
-      console.log("[htmlrewriter] Starting template rendering");
-      const tempRenderStart = performance.now();
-      const tpl = engine.parse(EXAMPLE_TEMPLATE)
-      const templateContext = {
-          "people": [
-              "alice",
-              "bob",
-              "carol"
-          ]
-      }
-      const renderedTemplate = await engine.render(tpl, templateContext)
-      console.log("[htmlrewriter] Completed template rendering in", performance.now() - tempRenderStart, "ms");
+      console.log("[htmlrewriter] Starting template parsing");
+      const tempParseStart = performance.now();
+      const tpl1 = engine.parse(EXAMPLE_TEMPLATE)
+      const tpl2 = engine.parse(INSERT_VARIABLE_TEMPLATE)
+      console.log("[htmlrewriter] Completed template parsing in", performance.now() - tempParseStart, "ms");
+
+
+      // Prepare to hold rendered templates that will be rendered once the extractions are done
+      let renderedTemplate1 = '';
+      let renderedTemplate2 = '';
 
       const pageState = {description: ""}
       let titleSeen = false;
@@ -140,7 +144,6 @@ async function handleRequest(event: FetchEvent) {
       if (response.ok && response.body) {
           // Need to "clone" the body stream for two passes
           const [body1, body2] = response.body.tee();
-
 
           let extractedBlogIntro = '';
           let capture = false;
@@ -177,7 +180,6 @@ async function handleRequest(event: FetchEvent) {
                   if (content) pageState.description = content;
               })
               .onElement(".blog-intro", (el: Element) => {
-                  console.log("BLOG INTRO ELEMENT FOUND");
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
 
@@ -230,18 +232,21 @@ async function handleRequest(event: FetchEvent) {
                   el.replaceChildren("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.", {escapeHTML: false});
                   lastRewriteTime = performance.now();
               })
-              .onElement("body", (el: Element) => {
+              .onElement("body", async (el: Element) => {
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
-                  el.append(renderedTemplate, { escapeHTML: false });
+                  el.append(renderedTemplate1, { escapeHTML: false });
                   lastRewriteTime = performance.now();
               })
               .onElement(".blog-intro", (el: Element) => {
                     const now = performance.now();
                     if (!firstRewriteTime) firstRewriteTime = now;
-
-                    const newContent = `Modified intro: ${extractedBlogIntro}`;
-                    el.replaceChildren(newContent, { escapeHTML: false });
+                    console.log("renderedTemplate2:", renderedTemplate2);
+                    // NOTE: el.replaceChildren is very sensitive to correct HTML semantics.
+                    // For instance, if you attempt to render a div as a child of a p tag, it won't do it.
+                    // instead it will empty and close the p tag and insert the new element after it, and adding another empty
+                    // p after it.
+                    el.replaceChildren(renderedTemplate2, { escapeHTML: false });
                     lastRewriteTime = performance.now()
               })
 
@@ -250,6 +255,18 @@ async function handleRequest(event: FetchEvent) {
           await body1.pipeThrough(extractorStreamer).pipeThrough(captureStream).pipeTo(new WritableStream()); // drain the stream to trigger processing
           console.log("[htmlrewriter] Completed extraction pass in", performance.now() - t2, "ms");
           console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
+
+          console.log("[htmlrewriter] Begin templates rendering");
+          const tempRenderStart2 = performance.now();
+          renderedTemplate1 = await engine.render(tpl1, {
+              "people": [
+                  "alice",
+                  "bob",
+                  "carol"
+              ]
+          })
+          renderedTemplate2 = await engine.render(tpl2, { introBody: extractedBlogIntro })
+          console.log("[htmlrewriter] Completed templates rendering in", performance.now() - tempRenderStart2, "ms");
 
           console.log("[htmlrewriter] Extracted blog intro HTML:", extractedBlogIntro);
 
