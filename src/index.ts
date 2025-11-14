@@ -62,8 +62,8 @@ function monitorStream(stream, onDone) {
 
 const engine = new Liquid();
 
-
-
+const BASE_URL = "https://remunerative-euhemeristically-liane.ngrok-free.dev"
+const BACKEND = "pageworkers-ngrok"
 
 async function handleRequest(event: FetchEvent) {
   // Log service version
@@ -82,9 +82,10 @@ async function handleRequest(event: FetchEvent) {
   }
 
   let url = new URL(req.url);
+  console.log("URL PATHNAME", url.pathname)
 
   // If request is to the `/` path...
-  if (url.pathname == "/") {
+  if (url.pathname != "/favicon.svg") {
 
       // Below are some common patterns for Fastly Compute services using JavaScript.
       // Head to https://developer.fastly.com/learning/compute/javascript/ to discover more.
@@ -119,9 +120,17 @@ async function handleRequest(event: FetchEvent) {
 
       console.log("[htmlrewriter] Starting fetch to backend");
       const t1 = performance.now();
-      let response = await fetch("http://localhost:8080", {
-          backend: "pageworkers-local",
+      const request = new Request(BASE_URL + url.pathname + "?" + Date.now().toString(), {
+          backend: BACKEND,
+          headers: {
+              ["ngrok-skip-browser-warning"]: 'any_value'
+          }
       });
+
+      request.setCacheOverride({ mode: "pass" });
+
+      let response = await fetch(request);
+
       console.log("[htmlrewriter] Completed fetch to backend in", performance.now() - t1, "ms");
       console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
@@ -241,7 +250,6 @@ async function handleRequest(event: FetchEvent) {
               .onElement(".blog-intro", (el: Element) => {
                     const now = performance.now();
                     if (!firstRewriteTime) firstRewriteTime = now;
-                    console.log("renderedTemplate2:", renderedTemplate2);
                     // NOTE: el.replaceChildren is very sensitive to correct HTML semantics.
                     // For instance, if you attempt to render a div as a child of a p tag, it won't do it.
                     // instead it will empty and close the p tag and insert the new element after it, and adding another empty
@@ -268,8 +276,6 @@ async function handleRequest(event: FetchEvent) {
           renderedTemplate2 = await engine.render(tpl2, { introBody: extractedBlogIntro })
           console.log("[htmlrewriter] Completed templates rendering in", performance.now() - tempRenderStart2, "ms");
 
-          console.log("[htmlrewriter] Extracted blog intro HTML:", extractedBlogIntro);
-
           // Now do a new stream for writing
           // let body = body2.pipeThrough(rewritingStreamer);
           const t3 = performance.now();
@@ -295,24 +301,9 @@ async function handleRequest(event: FetchEvent) {
     return new Response(req.url, {
         status: 308,
         headers: {
-            Location: "http://localhost:8080" + url.pathname
+            Location: BASE_URL + url.pathname
         },
     });
-
-    // return new Response(req.url, {
-    //     status: 308,
-    //     headers: {
-    //         Location: "https://pageworkers-demo.ftl.page" + url.pathname
-    //     },
-    // });
-
-    // Send a default synthetic response.
-    // return new Response(req.url, {
-    //   status: 308,
-    //     headers: {
-    //         Location: "https://fr.ulule.com" + url.pathname
-    //     },
-    // });
 
 
     // // Catch all other requests and return a 404.
