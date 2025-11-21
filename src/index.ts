@@ -62,6 +62,24 @@ function monitorStream(stream, onDone) {
 
 const engine = new Liquid();
 
+function getQueryParams(req: Request): Record<string, string | string[]> {
+    const u = new URL(req.url);
+    const out: Record<string, string | string[]> = {};
+    u.searchParams.forEach((value, key) => {
+        if (Object.prototype.hasOwnProperty.call(out, key)) {
+            const existing = out[key];
+            if (Array.isArray(existing)) {
+                existing.push(value);
+            } else {
+                out[key] = [existing as string, value];
+            }
+        } else {
+            out[key] = value;
+        }
+    });
+    return out;
+}
+
 const BASE_URL = "https://remunerative-euhemeristically-liane.ngrok-free.dev"
 const BACKEND = "pageworkers-ngrok"
 
@@ -82,41 +100,16 @@ async function handleRequest(event: FetchEvent) {
   }
 
   let url = new URL(req.url);
-  console.log("URL PATHNAME", url.pathname)
 
-  // If request is to the `/` path...
-  if (url.pathname != "/favicon.svg") {
+  const queryParams = getQueryParams(req);
 
-      // Below are some common patterns for Fastly Compute services using JavaScript.
-      // Head to https://developer.fastly.com/learning/compute/javascript/ to discover more.
-
-      // Create a new request.
-      // let bereq = new Request("http://example.com");
-
-      // Add request headers.
-      // req.headers.set("X-Custom-Header", "Welcome to Fastly Compute!");
-      // req.headers.set(
-      //   "X-Another-Custom-Header",
-      //   "Recommended reading: https://developer.fastly.com/learning/compute"
-      // );
-
-      // Create a cache override.
-      // To use this, uncomment the import statement at the top of this file for CacheOverride.
-      // let cacheOverride = new CacheOverride("override", { ttl: 60 });
-
-      // Forward the request to a backend.
-      // let beresp = await fetch(req, {
-      //   backend: "backend_name",
-      //   cacheOverride,
-      // });
-
-      // Remove response headers.
-      // beresp.headers.delete("X-Another-Custom-Header");
-
+    // If request is to the `/` path...
+  if (!url.pathname.startsWith("/favicon") && !url.pathname.startsWith("/assets") && !url.pathname.startsWith("/.11ty") && !url.pathname.startsWith("/bundle") && !url.pathname.startsWith("/site.webmanifest") && !url.pathname.startsWith("/.well-known")) {
       // Log to a Fastly endpoint.
       // To use this, uncomment the import statement at the top of this file for Logger.
       // const logger = new Logger("my_endpoint");
       // logger.log("Hello from the edge!");
+      console.log(`============================================= NEW REQUEST ON ${url.pathname} =============================================`);
 
       console.log("[htmlrewriter] Starting fetch to backend");
       const t1 = performance.now();
@@ -225,6 +218,7 @@ async function handleRequest(event: FetchEvent) {
                   lastRewriteTime = performance.now();
               })
               .onElement("a", (el: Element) => {
+                  if(linkStats.linksModified >= Number.parseInt(queryParams['maxLinksUpdated'] as string)) return
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
 
@@ -238,7 +232,7 @@ async function handleRequest(event: FetchEvent) {
                   }
                   linkStats.linksModified++;
                   el.setAttribute("href", raw + "#link");
-                  el.replaceChildren("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.", {escapeHTML: false});
+                  el.append(`&nbsp<strong>Link updated number: ${linkStats.linksModified - 1}</strong>`, {escapeHTML: false});
                   lastRewriteTime = performance.now();
               })
               .onElement("body", async (el: Element) => {
