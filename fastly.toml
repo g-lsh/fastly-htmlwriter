@@ -26,3 +26,6 @@ service_id = "5aUsDlK6vnBLDyNDhVTMnM"
 
 [local_server.backends.pageworkers-ngrok]
     url = "https://remunerative-euhemeristically-liane.ngrok-free.dev"
+
+[local_server.backends.dapi]
+    url = "https://httpbin.org"

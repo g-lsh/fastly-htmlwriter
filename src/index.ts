@@ -127,6 +127,12 @@ async function handleRequest(event: FetchEvent) {
       console.log("[htmlrewriter] Completed fetch to backend in", performance.now() - t1, "ms");
       console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
+      // DUMMY Delivery API call to mock latency
+      console.log("[htmlrewriter] Starting GET fetch to Delivery API to estimate latency");
+      const dummyApiCallStart = performance.now();
+      const dapiRes = await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"))
+      console.log("[htmlrewriter] Completed GET fetch to Delivery API in", performance.now() - dummyApiCallStart, "ms");
+
       console.log("[htmlrewriter] Starting basic template parsing");
       const tempParseStart = performance.now();
       const n = Number.parseInt(queryParams['numberOfBasicTemplates'] as string ?? '1', 10);
