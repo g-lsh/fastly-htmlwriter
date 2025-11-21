@@ -25,7 +25,7 @@ const escapeHtml = (s = "") =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
     );
 
-const EXAMPLE_TEMPLATE = `<ul>
+const EXAMPLE_TEMPLATE_NO_EXTRACTS = `<ul>
 {%- for person in people %}
   <li>
     <a href="{{person | prepend: "https://example.com/"}}">
@@ -127,16 +127,16 @@ async function handleRequest(event: FetchEvent) {
       console.log("[htmlrewriter] Completed fetch to backend in", performance.now() - t1, "ms");
       console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
-
-      console.log("[htmlrewriter] Starting template parsing");
+      console.log("[htmlrewriter] Starting basic template parsing");
       const tempParseStart = performance.now();
-      const tpl1 = engine.parse(EXAMPLE_TEMPLATE)
-      const tpl2 = engine.parse(INSERT_VARIABLE_TEMPLATE)
-      console.log("[htmlrewriter] Completed template parsing in", performance.now() - tempParseStart, "ms");
+      const n = Number.parseInt(queryParams['numberOfBasicTemplates'] as string ?? '1', 10);
+      const templatesWithNoExtracts = Array.from({ length: n }, () => engine.parse(EXAMPLE_TEMPLATE_NO_EXTRACTS));
 
+      console.log(`[htmlrewriter] Completed parsing of ${templatesWithNoExtracts.length} basic templates in: `, performance.now() - tempParseStart, "ms");
+      const tpl2 = engine.parse(INSERT_VARIABLE_TEMPLATE)
 
       // Prepare to hold rendered templates that will be rendered once the extractions are done
-      let renderedTemplate1 = '';
+      let renderedBasicTemplates = []
       let renderedTemplate2 = '';
 
       const pageState = {description: ""}
@@ -238,7 +238,10 @@ async function handleRequest(event: FetchEvent) {
               .onElement("body", async (el: Element) => {
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
-                  el.append(renderedTemplate1, { escapeHTML: false });
+                  renderedBasicTemplates.forEach((renderedBasicTemplate) =>
+                  {
+                      el.append(renderedBasicTemplate, { escapeHTML: false });
+                  })
                   lastRewriteTime = performance.now();
               })
               .onElement(".blog-intro", (el: Element) => {
@@ -258,17 +261,21 @@ async function handleRequest(event: FetchEvent) {
           console.log("[htmlrewriter] Completed extraction pass in", performance.now() - t2, "ms");
           console.log("[htmlrewriter] Time since start:", performance.now() - t0, "ms");
 
-          console.log("[htmlrewriter] Begin templates rendering");
+          console.log("[htmlrewriter] Begin basic templates rendering");
           const tempRenderStart2 = performance.now();
-          renderedTemplate1 = await engine.render(tpl1, {
+          renderedBasicTemplates = await Promise.all(templatesWithNoExtracts.map((template) => engine.render(template, {
               "people": [
                   "alice",
                   "bob",
                   "carol"
               ]
-          })
+          })));
+          console.log(`[htmlrewriter] Rendered ${renderedBasicTemplates.length} basic templates in: `, performance.now() - tempRenderStart2, "ms");
+
+          console.log("[htmlrewriter] Begin extract templates rendering");
+          const tempRenderStart3 = performance.now();
           renderedTemplate2 = await engine.render(tpl2, { introBody: extractedBlogIntro })
-          console.log("[htmlrewriter] Completed templates rendering in", performance.now() - tempRenderStart2, "ms");
+          console.log(`[htmlrewriter] Rendered extract template in: `, performance.now() - tempRenderStart3, "ms");
 
           // Now do a new stream for writing
           // let body = body2.pipeThrough(rewritingStreamer);
