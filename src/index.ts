@@ -147,51 +147,89 @@ async function handleRequest(event: FetchEvent) {
           // Need to "clone" the body stream for two passes
           const [body1, body2] = response.body.tee();
 
-          let extractedBlogIntro = '';
-          let capture = false;
+          const extracts = (queryParams['extracts'] as string ?? "").split(",").map(s => s.trim())
+          console.log("[htmlrewriter] Extractors to apply:", extracts);
+          const extractValues = extracts.reduce((acc, curr) => ({...acc, [curr]: "" }), {})
 
-          // Stream to extract HTML content from page
+          // Prepare per-extract capture state
+          const captureState: Record<string, { capturing: boolean; buffer: string }> = {};
+          extracts.forEach(e => (captureState[e] = { capturing: false, buffer: "" }));
+          const decoder = new TextDecoder();
+
           const captureStream = new TransformStream({
               transform(chunk, controller) {
-                  const text = new TextDecoder().decode(chunk);
+                  let text = decoder.decode(chunk);
 
-                  if (!capture && text.includes("__EXTRACT_START__")) {
-                      capture = true;
-                      // Start capturing after the start marker
-                      const startIndex = text.indexOf("__EXTRACT_START__") + "__EXTRACT_START__".length;
-                      extractedBlogIntro += text.slice(startIndex);
-                  } else if (capture) {
-                      if (text.includes("__EXTRACT_END__")) {
-                          // Stop capturing at the end marker
-                          const endIndex = text.indexOf("__EXTRACT_END__");
-                          extractedBlogIntro += text.slice(0, endIndex);
-                          capture = false;
-                      } else {
-                          extractedBlogIntro += text;
+                  // Process each extract independently
+                  for (const extract of extracts) {
+                      if (!extract) continue;
+                      const startMarker = `__EXTRACT_START__${extract}`;
+                      const endMarker = `__EXTRACT_END__${extract}`;
+                      let state = captureState[extract];
+
+                      // Loop while there is something to find for this extract in current text
+                      while (text.length) {
+                          if (!state.capturing) {
+                              const sIdx = text.indexOf(startMarker);
+                              if (sIdx === -1) break; // no start marker, done for this extract
+                              // Begin capture after start marker
+                              text = text.slice(sIdx + startMarker.length);
+                              state.capturing = true;
+                          }
+                          // We are capturing
+                          const eIdx = text.indexOf(endMarker);
+                          if (eIdx === -1) {
+                              // No end marker yet, accumulate all and wait for next chunk
+                              state.buffer += text;
+                              text = ""; // consumed
+                          } else {
+                              // End marker found; store captured segment
+                              state.buffer += text.slice(0, eIdx);
+                              extractValues[extract] = state.buffer;
+                              // Reset state for potential subsequent occurrences
+                              state.capturing = false;
+                              state.buffer = "";
+                              // Continue scanning after end marker (could be another start)
+                              text = text.slice(eIdx + endMarker.length);
+                              continue;
+                          }
                       }
                   }
 
-                  controller.enqueue(chunk); // pass chunk downstream unchanged
-              }
+                  controller.enqueue(chunk); // pass original bytes downstream
+              },
+              flush() {
+                  // Finalize any unterminated captures
+                  for (const extract of extracts) {
+                      const st = captureState[extract];
+                      if (st.capturing && st.buffer) {
+                          extractValues[extract] = st.buffer;
+                      }
+                  }
+              },
           });
 
-          let extractorStreamer = new HTMLRewritingStream()
+
+          const extractorStreamer = new HTMLRewritingStream()
               .onElement('meta[name="description"]', (el: Element) => {
                   if (pageState.description) return;
                   const content = (el.getAttribute("content") || "").trim();
                   if (content) pageState.description = content;
-              })
-              .onElement(".blog-intro", (el: Element) => {
+              });
+
+          extracts.forEach((selector) => {
+              if(!selector) return;
+              extractorStreamer.onElement(selector, (el: Element) => {
                   const now = performance.now();
                   if (!firstRewriteTime) firstRewriteTime = now;
 
-                  // Mark this element for extraction
-                  const extractStart = "__EXTRACT_START__";
-                  const extractEnd = "__EXTRACT_END__";
+                  const extractStart = `__EXTRACT_START__${selector}`;
+                  const extractEnd = `__EXTRACT_END__${selector}`;
 
                   el.prepend(extractStart, { escapeHTML: false });
-                  el.append(extractEnd, { escapeHTML: false })
-              })
+                  el.append(extractEnd, { escapeHTML: false });
+              });
+          });
 
 
           let firstRewriteTime = 0;
@@ -244,16 +282,20 @@ async function handleRequest(event: FetchEvent) {
                   })
                   lastRewriteTime = performance.now();
               })
-              .onElement(".blog-intro", (el: Element) => {
-                    const now = performance.now();
-                    if (!firstRewriteTime) firstRewriteTime = now;
-                    // NOTE: el.replaceChildren is very sensitive to correct HTML semantics.
-                    // For instance, if you attempt to render a div as a child of a p tag, it won't do it.
-                    // instead it will empty and close the p tag and insert the new element after it, and adding another empty
-                    // p after it.
-                    el.replaceChildren(renderedTemplate2, { escapeHTML: false });
-                    lastRewriteTime = performance.now()
-              })
+
+              extracts.forEach((extract, index) => {
+                  if(!extract) return;
+                  rewritingStreamer.onElement(extract, (el: Element) => {
+                      const now = performance.now();
+                      if (!firstRewriteTime) firstRewriteTime = now;
+                      // NOTE: el.replaceChildren is very sensitive to correct HTML semantics.
+                      // For instance, if you attempt to render a div as a child of a p tag, it won't do it.
+                      // instead it will empty and close the p tag and insert the new element after it, and adding another empty
+                      // p after it.
+                      el.replaceChildren(renderedExtractTemplates[index], {escapeHTML: false});
+                      lastRewriteTime = performance.now()
+                  })
+              });
 
           console.log("[htmlrewriter] Begin extraction pass");
           const t2 = performance.now();
@@ -274,8 +316,13 @@ async function handleRequest(event: FetchEvent) {
 
           console.log("[htmlrewriter] Begin extract templates rendering");
           const tempRenderStart3 = performance.now();
-          renderedTemplate2 = await engine.render(tpl2, { introBody: extractedBlogIntro })
-          console.log(`[htmlrewriter] Rendered extract template in: `, performance.now() - tempRenderStart3, "ms");
+          // Later when rendering the template that expects introBody (example):
+          const renderedExtractTemplates = await Promise.all(extracts.map((extract) => {
+                return engine.render(tpl2, {
+                    introBody: extractValues[extract] || ""
+                });
+          }));
+          console.log(`[htmlrewriter] Rendered ${renderedExtractTemplates.length} extract template in: `, performance.now() - tempRenderStart3, "ms");
 
           // Now do a new stream for writing
           // let body = body2.pipeThrough(rewritingStreamer);
@@ -305,10 +352,4 @@ async function handleRequest(event: FetchEvent) {
             Location: BASE_URL + url.pathname
         },
     });
-
-
-    // // Catch all other requests and return a 404.
-  // return new Response("The page you requested could not be found", {
-  //   status: 404,
-  // });
 }
