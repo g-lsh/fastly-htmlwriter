@@ -104,11 +104,10 @@ async function handleRequest(event: FetchEvent) {
         perf["Backend fetch"] = performance.now() - t1;
 
         const dummyApiCallStart = performance.now();
-        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"))
+        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"), { backend: "dapi"})
         perf["Delivery API fetch"] = performance.now() - dummyApiCallStart;
 
         const n = Number.parseInt(queryParams['numberOfBasicTemplates'] as string ?? '1', 10);
-
         const tempParseStart = performance.now();
         let templatesWithNoExtracts: any[] = [];
         for (let i = 0; i < n; i++) {
@@ -116,21 +115,22 @@ async function handleRequest(event: FetchEvent) {
         }
         perf[`Parse ${n} basic templates`] = performance.now() - tempParseStart;
 
-        const tempParseExtractTemplate = performance.now();
-        const tpl2 = engine.parse(INSERT_VARIABLE_TEMPLATE)
-        perf["Parse extract template (a single template)"] = performance.now() - tempParseExtractTemplate;
-
         let renderedBasicTemplates: string[] = [];
 
         const pageState = { description: "" }
         let titleSeen = false;
         const linkStats = { linksModified: 0, linksAlreadySuffixed: 0 };
+        const htmlSizeStats = { total: 0, count: 0, max: 0 };
 
         if (response.ok && response.body) {
             const [body1, body2] = response.body.tee();
 
-            const extracts = (queryParams['extracts'] as string ?? "").split(",").map(s => s.trim())
+            const extracts = (queryParams['extracts'] as string ?? "").split(",").map(s => s.trim()).filter((s) => s.length > 0);
             const extractValues = extracts.reduce((acc, curr) => ({ ...acc, [curr]: "" }), {})
+
+            const tempParseExtractTemplate = performance.now();
+            const tpl2 = extracts.length > 0 ? engine.parse(INSERT_VARIABLE_TEMPLATE): null;
+            perf["Parse extract template (a single template)"] = performance.now() - tempParseExtractTemplate;
 
             // Capture stream
             const captureState: Record<string, { capturing: boolean; buffer: string }> = {};
@@ -139,6 +139,12 @@ async function handleRequest(event: FetchEvent) {
 
             const captureStream = new TransformStream({
                 transform(chunk, controller) {
+                    // Compute size stats
+                    const size = chunk.byteLength;
+                    htmlSizeStats.total += size;
+                    htmlSizeStats.count++;
+                    if (size > htmlSizeStats.max) htmlSizeStats.max = size;
+
                     let text = decoder.decode(chunk);
                     for (const extract of extracts) {
                         if (!extract) continue;
@@ -261,13 +267,14 @@ async function handleRequest(event: FetchEvent) {
             perf["Render basic templates"] = performance.now() - tempRenderStart2;
 
             const tempRenderStart3 = performance.now();
-            renderedExtractTemplates = await Promise.all(
+            console.log("EXTRACT VALUES:", extracts);
+            renderedExtractTemplates = tpl2 !== null ? await Promise.all(
                 extracts.map((extract) =>
                     engine.render(tpl2, {
                         introBody: extractValues[extract] || ""
                     })
                 )
-            );
+            ) : [];
             perf["Render extract templates"] = performance.now() - tempRenderStart3;
 
             extracts.forEach((extract, index) => {
@@ -283,7 +290,7 @@ async function handleRequest(event: FetchEvent) {
             const t3 = performance.now();
             function metricsFragment(obj: Record<string, number>): string {
                 return `<div id="perf-metrics" style="position: absolute;right:0;top:0;background:#fff;z-index:1000;border:2px solid black;padding:10px;">${Object.entries(obj).map(([k, v]) =>
-                    `<p><strong>${escapeHtml(k)}</strong>: ${Number.isFinite(v) ? v.toFixed(5) : v}${k.toLowerCase().includes("links") ? "" : "ms"}</p>`).join("")}</div>`;
+                    `<p><strong>${escapeHtml(k)}</strong>: ${Number.isFinite(v) ? v.toFixed(3) : v}${k.toLowerCase().includes("links") || k.toLowerCase().includes("chunk") || k.toLowerCase().includes("html") ? "" : " ms"}</p>`).join("")}</div>`;
             }
 
             let rewriteFinished = false;
@@ -296,6 +303,11 @@ async function handleRequest(event: FetchEvent) {
                     perf["Granular rewrite duration"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
                     perf["Links modified"] = linkStats.linksModified;
                     perf["Total time since start"] = performance.now() - t0;
+                    // Populate size metrics
+                    perf["Original HTML size KB"] = htmlSizeStats.total / 1024;
+                    perf["HTML chunk count"] = htmlSizeStats.count;
+                    perf["Largest chunk bytes"] = htmlSizeStats.max;
+                    perf["Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
                 }
             );
 
@@ -311,6 +323,11 @@ async function handleRequest(event: FetchEvent) {
                         perf["Granular rewrite duration"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
                         perf["Links modified"] = linkStats.linksModified;
                         perf["Total time since start"] = performance.now() - t0;
+                        // Populate size metrics
+                        perf["Original HTML size KB"] = htmlSizeStats.total / 1024;
+                        perf["HTML chunk count"] = htmlSizeStats.count;
+                        perf["Largest chunk bytes"] = htmlSizeStats.max;
+                        perf["Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
                     }
                     const fragment = metricsFragment(perf);
                     controller.enqueue(new TextEncoder().encode(fragment));
