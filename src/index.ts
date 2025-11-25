@@ -147,7 +147,7 @@ async function handleRequest(event: FetchEvent) {
         perf["[NETWORK] Backend fetch"] = performance.now() - t1;
 
         const dummyApiCallStart = performance.now();
-        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"))
+        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"), { backend: "dapi" });
         perf["[NETWORK] Delivery API fetch"] = performance.now() - dummyApiCallStart;
 
         const n = Number.parseInt(queryParams['numberOfBasicTemplates'] as string ?? '1', 10);
@@ -156,7 +156,7 @@ async function handleRequest(event: FetchEvent) {
         for (let i = 0; i < n; i++) {
             templatesWithNoExtracts.push(engine.parse(EXAMPLE_TEMPLATE_NO_EXTRACTS));
         }
-        perf[`[TEMPLATES] Parse ${n} no extract templates`] = performance.now() - tempParseStart;
+        perf[`[TEMPLATES] Parse extract templates`] = performance.now() - tempParseStart;
 
         let renderedBasicTemplates: string[] = [];
 
@@ -356,10 +356,16 @@ async function handleRequest(event: FetchEvent) {
             const monitoredBody = monitorStream(
                 body2.pipeThrough(rewritingStreamer),
                 () => {
+                    const rewriteSteamCpuTime = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                    const totalStreamCpuTime = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + rewriteSteamCpuTime
+                    const totalTemplateCpuTime = (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number) + (perf[`[TEMPLATES] Parse extract templates`] as number) + (perf["[TEMPLATES] Parse extract template (a single template)"] as number);
+
                     rewriteFinished = true;
                     perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
-                    perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                    perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + (perf["[STREAMS] Rewrite steam estimated CPU time"] as number) + (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number);
+                    perf["[STREAMS] Rewrite stream estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                    perf["[TOTAL] Total templates parsing and rendering estimated CPU time"] = totalTemplateCpuTime
+                    perf["[TOTAL] Estimated all stream operations CPU time"] = totalStreamCpuTime
+                    perf["[TOTAL] Estimated TOTAL CPU time"] = totalTemplateCpuTime + totalStreamCpuTime
                     perf["[MISC] Links modified"] = linkStats.linksModified;
                     perf["[MISC] Total run time"] = performance.now() - t0;
                     // Populate size metrics
@@ -377,11 +383,16 @@ async function handleRequest(event: FetchEvent) {
                     controller.enqueue(chunk);
                 },
                 flush(controller) {
+                    const rewriteSteamCpuTime = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                    const totalStreamCpuTime = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + rewriteSteamCpuTime
+                    const totalTemplateCpuTime = (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number) + (perf[`[TEMPLATES] Parse extract templates`] as number) + (perf["[TEMPLATES] Parse extract template (a single template)"] as number);
                     if (!rewriteFinished) {
                         // ensure metrics populated even if onDone somehow not fired yet
                         perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
-                        perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                        perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + (perf["[STREAMS] Rewrite steam estimated CPU time"] as number) + (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number);
+                        perf["[STREAMS] Rewrite stream estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                        perf["[TOTAL] Total templates parsing and rendering estimated CPU time"] = totalTemplateCpuTime
+                        perf["[TOTAL] Estimated all stream operations CPU time"] = totalStreamCpuTime
+                        perf["[TOTAL] Estimated TOTAL CPU time"] = totalTemplateCpuTime + totalStreamCpuTime
                         perf["[MISC] Links modified"] = linkStats.linksModified;
                         perf["[MISC] Total run time"] = performance.now() - t0;
                         // Populate size metrics
