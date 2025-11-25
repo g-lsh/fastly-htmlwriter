@@ -70,6 +70,49 @@ function getQueryParams(req: Request): Record<string, string | string[]> {
     return out;
 }
 
+// In `src/index.ts` replace the metricsFragment function with this version.
+function metricsFragment(obj: Record<string, number | string>): string {
+    // Preserve insertion order of groups
+    const groups: Record<string, { label: string; value: number | string }[]> = {};
+    const groupOrder: string[] = [];
+
+    Object.entries(obj).forEach(([rawKey, v]) => {
+        const m = rawKey.match(/^\[([^\]]+)\]\s*(.*)$/);
+        const group = m ? m[1] : "Ungrouped";
+        const label = m ? m[2] : rawKey;
+        if (!groups[group]) {
+            groups[group] = [];
+            groupOrder.push(group);
+        }
+        groups[group].push({ label, value: v });
+    });
+
+    const esc = (s: string) =>
+        s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+
+    const groupHtml = groupOrder
+        .map((g, idx) => {
+            const measures = groups[g]
+                .map(({ label, value }) => {
+                    const needsUnit = !/\blinks\b|\bchunk\b|\bhtml\b/i.test(label);
+                    const formatted =
+                        (Number.isFinite(value) && typeof value !== "string")
+                            ? (value as number).toFixed(3) + (needsUnit ? " ms" : "")
+                            : value;
+                    return `<p><strong>${esc(label)}</strong>: ${formatted}</p>`;
+                })
+                .join("");
+            const separator = idx === 0
+                ? ""
+                : `<div style="margin:12px 0;border-top:1px solid #444;"></div>`;
+            // Optional group header; keep the bracket style for clarity
+            return `${separator}<div class="perf-group"><h4 style="margin:4px 0 8px 0;font:14px sans-serif;">${esc(g)}</h4>${measures}</div>`;
+        })
+        .join("");
+
+    return `<div id="perf-metrics" style="position:absolute;right:0;top:0;background:#fff;z-index:1000;border:2px solid #000;padding:10px;overflow:auto;width:700px">${groupHtml}</div>`;
+}
+
 const BASE_URL = "https://remunerative-euhemeristically-liane.ngrok-free.dev"
 const BACKEND = "pageworkers-ngrok"
 
@@ -113,7 +156,7 @@ async function handleRequest(event: FetchEvent) {
         for (let i = 0; i < n; i++) {
             templatesWithNoExtracts.push(engine.parse(EXAMPLE_TEMPLATE_NO_EXTRACTS));
         }
-        perf[`[TEMPLATES] Parse ${n} basic templates`] = performance.now() - tempParseStart;
+        perf[`[TEMPLATES] Parse ${n} no extract templates`] = performance.now() - tempParseStart;
 
         let renderedBasicTemplates: string[] = [];
 
@@ -269,7 +312,7 @@ async function handleRequest(event: FetchEvent) {
 
             const t2 = performance.now();
             await body1.pipeThrough(extractorStreamer).pipeThrough(captureStream).pipeTo(new WritableStream());
-            perf["[MIST] Total HTML extracts made"] = totalHtmlExtracts;
+            perf["[MISC] Total HTML extracts made"] = totalHtmlExtracts;
             perf["[STREAMS] Extraction and capture stream wall time"] = performance.now() - t2;
             perf["[STREAMS] Extractor stream estimated CPU time"] = (extractorLastTime && extractorFirstTime) ? (extractorLastTime - extractorFirstTime) : 0;
 
@@ -295,7 +338,7 @@ async function handleRequest(event: FetchEvent) {
             ) : [];
             perf["[MISC] Extracts selector values"] = extracts.join(",")
             perf["[TEMPLATES] Number of extract templates rendered"] = renderedExtractTemplates.length;
-            perf["[TEMPLATES Render extract templates"] = performance.now() - tempRenderStart3;
+            perf["[TEMPLATES] Render extract templates"] = performance.now() - tempRenderStart3;
 
             extracts.forEach((extract, index) => {
                 if (!extract) return;
@@ -308,11 +351,6 @@ async function handleRequest(event: FetchEvent) {
             });
 
             const t3 = performance.now();
-            function metricsFragment(obj: Record<string, number|string>): string {
-                return `<div id="perf-metrics" style="position: absolute;right:0;top:0;background:#fff;z-index:1000;border:2px solid black;padding:10px;">${Object.entries(obj).map(([k, v]) =>
-                    `<p><strong>${escapeHtml(k)}</strong>: ${Number.isFinite(v) || typeof v !== 'string' ? (v as number).toFixed(3) : v}${k.toLowerCase().includes("links") || k.toLowerCase().includes("chunk") || k.toLowerCase().includes("html") ? "" : " ms"}</p>`).join("")}</div>`;
-            }
-
             let rewriteFinished = false;
 
             const monitoredBody = monitorStream(
@@ -321,7 +359,7 @@ async function handleRequest(event: FetchEvent) {
                     rewriteFinished = true;
                     perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
                     perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                    perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["Capture stream estimated CPU time"] as number) + (perf["Extractor stream estimated CPU time"] as number) + (perf["Rewrite steam estimated CPU time"] as number) + (perf["Render extract templates"] as number) + (perf["Render no extract templates"] as number);
+                    perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + (perf["[STREAMS] Rewrite steam estimated CPU time"] as number) + (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number);
                     perf["[MISC] Links modified"] = linkStats.linksModified;
                     perf["[MISC] Total run time"] = performance.now() - t0;
                     // Populate size metrics
@@ -329,6 +367,7 @@ async function handleRequest(event: FetchEvent) {
                     perf["[HTML] HTML chunk count"] = htmlSizeStats.count;
                     perf["[HTML] Largest chunk bytes"] = htmlSizeStats.max;
                     perf["[HTML] Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
+                    perf["[TOTAL] Total time since start"] = performance.now() - t0;
                 }
             );
 
@@ -342,7 +381,7 @@ async function handleRequest(event: FetchEvent) {
                         // ensure metrics populated even if onDone somehow not fired yet
                         perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
                         perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                        perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["Capture stream estimated CPU time"] as number) + (perf["Extractor stream estimated CPU time"] as number) + (perf["Rewrite steam estimated CPU time"] as number) + (perf["Render extract templates"] as number) + (perf["Render no extract templates"] as number);
+                        perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["[STREAMS] Capture stream estimated CPU time"] as number) + (perf["[STREAMS] Extractor stream estimated CPU time"] as number) + (perf["[STREAMS] Rewrite steam estimated CPU time"] as number) + (perf["[TEMPLATES] Render extract templates"] as number) + (perf["[TEMPLATES] Render no extract templates"] as number);
                         perf["[MISC] Links modified"] = linkStats.linksModified;
                         perf["[MISC] Total run time"] = performance.now() - t0;
                         // Populate size metrics
@@ -350,6 +389,7 @@ async function handleRequest(event: FetchEvent) {
                         perf["[HTML] HTML chunk count"] = htmlSizeStats.count;
                         perf["[HTML] Largest chunk bytes"] = htmlSizeStats.max;
                         perf["[HTML] Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
+                        perf["[TOTAL] Total time since start"] = performance.now() - t0;
                     }
                     const fragment = metricsFragment(perf);
                     controller.enqueue(new TextEncoder().encode(fragment));
