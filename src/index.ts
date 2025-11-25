@@ -46,9 +46,9 @@ function monitorStream(stream: ReadableStream, onDone: () => void) {
 const engine = new Liquid();
 
 // Added helper
-function logPerf(perf: Record<string, number>) {
+function logPerf(perf: Record<string, number | string>) {
     Object.entries(perf).forEach(([k, v]) => {
-        console.log(`[perf] ${k}: ${Number.isFinite(v) ? v.toFixed(2) : v}${k.toLowerCase().includes("links") ? "" : "ms"}`);
+        console.log(`[perf] ${k}: ${Number.isFinite(v) || typeof v !== 'string' ? (v as number).toFixed(2) : v}${k.toLowerCase().includes("links") ? "" : "ms"}`);
     });
 }
 
@@ -75,11 +75,11 @@ const BACKEND = "pageworkers-ngrok"
 
 async function handleRequest(event: FetchEvent) {
     const t0 = performance.now();
-    const perf: Record<string, number> = {}; // central perf collection
+    const perf: Record<string, number|string> = {}; // central perf collection
 
     let req = event.request;
     if (!["HEAD", "GET", "PURGE"].includes(req.method)) {
-        perf["Total time since start"] = performance.now() - t0;
+        perf["[TOTAL] Total time since start"] = performance.now() - t0;
         return new Response("This method is not allowed", { status: 405 });
     }
 
@@ -101,11 +101,11 @@ async function handleRequest(event: FetchEvent) {
         });
         request.setCacheOverride({ mode: "pass" });
         let response = await fetch(request);
-        perf["Backend fetch"] = performance.now() - t1;
+        perf["[NETWORK] Backend fetch"] = performance.now() - t1;
 
         const dummyApiCallStart = performance.now();
-        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"), { backend: "dapi"})
-        perf["Delivery API fetch"] = performance.now() - dummyApiCallStart;
+        await fetch(new Request("https://5qrxlg.api.jb3.pw.adn-test.cloud/hc"))
+        perf["[NETWORK] Delivery API fetch"] = performance.now() - dummyApiCallStart;
 
         const n = Number.parseInt(queryParams['numberOfBasicTemplates'] as string ?? '1', 10);
         const tempParseStart = performance.now();
@@ -113,7 +113,7 @@ async function handleRequest(event: FetchEvent) {
         for (let i = 0; i < n; i++) {
             templatesWithNoExtracts.push(engine.parse(EXAMPLE_TEMPLATE_NO_EXTRACTS));
         }
-        perf[`Parse ${n} basic templates`] = performance.now() - tempParseStart;
+        perf[`[TEMPLATES] Parse ${n} basic templates`] = performance.now() - tempParseStart;
 
         let renderedBasicTemplates: string[] = [];
 
@@ -130,15 +130,19 @@ async function handleRequest(event: FetchEvent) {
 
             const tempParseExtractTemplate = performance.now();
             const tpl2 = extracts.length > 0 ? engine.parse(INSERT_VARIABLE_TEMPLATE): null;
-            perf["Parse extract template (a single template)"] = performance.now() - tempParseExtractTemplate;
+            perf["[TEMPLATES] Parse extract template (a single template)"] = performance.now() - tempParseExtractTemplate;
 
             // Capture stream
             const captureState: Record<string, { capturing: boolean; buffer: string }> = {};
             extracts.forEach(e => (captureState[e] = { capturing: false, buffer: "" }));
             const decoder = new TextDecoder();
 
+            let firstCaptureTime = 0;
+            let lastCaptureTime = 0;
             const captureStream = new TransformStream({
                 transform(chunk, controller) {
+                    const now = performance.now();
+                    if (!firstCaptureTime) firstCaptureTime = now;
                     // Compute size stats
                     const size = chunk.byteLength;
                     htmlSizeStats.total += size;
@@ -172,9 +176,11 @@ async function handleRequest(event: FetchEvent) {
                             }
                         }
                     }
+                    lastCaptureTime = performance.now();
                     controller.enqueue(chunk);
                 },
                 flush() {
+                    perf["[STREAMS] Capture stream estimated CPU time"] = (lastCaptureTime && firstCaptureTime) ? (lastCaptureTime - firstCaptureTime) : 0;
                     for (const extract of extracts) {
                         const st = captureState[extract];
                         if (st.capturing && st.buffer) {
@@ -184,26 +190,36 @@ async function handleRequest(event: FetchEvent) {
                 },
             });
 
+            let extractorFirstTime = 0;
+            let extractorLastTime = 0;
+            let totalHtmlExtracts = 0;
             const extractorStreamer = new HTMLRewritingStream()
                 .onElement('meta[name="description"]', (el: Element) => {
-                    if (pageState.description) return;
-                    const content = (el.getAttribute("content") || "").trim();
-                    if (content) pageState.description = content;
+                    if(!extractorFirstTime) extractorFirstTime = performance.now();
+                    if (!pageState.description) {
+                        totalHtmlExtracts++;
+                        const content = (el.getAttribute("content") || "").trim();
+                        if (content) pageState.description = content;
+                    };
+                    extractorLastTime = performance.now();
                 });
 
             extracts.forEach((selector) => {
                 if (!selector) return;
                 extractorStreamer.onElement(selector, (el: Element) => {
+                    if(!extractorFirstTime) extractorFirstTime = performance.now();
                     const extractStart = `__EXTRACT_START__${selector}`;
                     const extractEnd = `__EXTRACT_END__${selector}`;
                     el.prepend(extractStart, { escapeHTML: false });
                     el.append(extractEnd, { escapeHTML: false });
+                    extractorLastTime = performance.now();
+                    totalHtmlExtracts++
                 });
             });
 
+
             let firstRewriteTime = 0;
             let lastRewriteTime = 0;
-
             const rewritingStreamer = new HTMLRewritingStream()
                 .onElement("title", (el: Element) => {
                     const now = performance.now();
@@ -253,7 +269,9 @@ async function handleRequest(event: FetchEvent) {
 
             const t2 = performance.now();
             await body1.pipeThrough(extractorStreamer).pipeThrough(captureStream).pipeTo(new WritableStream());
-            perf["Extraction pass"] = performance.now() - t2;
+            perf["[MIST] Total HTML extracts made"] = totalHtmlExtracts;
+            perf["[STREAMS] Extraction and capture stream wall time"] = performance.now() - t2;
+            perf["[STREAMS] Extractor stream estimated CPU time"] = (extractorLastTime && extractorFirstTime) ? (extractorLastTime - extractorFirstTime) : 0;
 
             const tempRenderStart2 = performance.now();
             renderedBasicTemplates = await Promise.all(
@@ -263,8 +281,8 @@ async function handleRequest(event: FetchEvent) {
                     })
                 )
             );
-            // console.log("Rendered basic templates count:", templatesWithNoExtracts[0]);
-            perf["Render basic templates"] = performance.now() - tempRenderStart2;
+            perf["[TEMPLATES] Number of no extract templates rendered"] = renderedBasicTemplates.length;
+            perf["[TEMPLATES] Render no extract templates"] = performance.now() - tempRenderStart2;
 
             const tempRenderStart3 = performance.now();
             console.log("EXTRACT VALUES:", extracts);
@@ -275,7 +293,9 @@ async function handleRequest(event: FetchEvent) {
                     })
                 )
             ) : [];
-            perf["Render extract templates"] = performance.now() - tempRenderStart3;
+            perf["[MISC] Extracts selector values"] = extracts.join(",")
+            perf["[TEMPLATES] Number of extract templates rendered"] = renderedExtractTemplates.length;
+            perf["[TEMPLATES Render extract templates"] = performance.now() - tempRenderStart3;
 
             extracts.forEach((extract, index) => {
                 if (!extract) return;
@@ -288,9 +308,9 @@ async function handleRequest(event: FetchEvent) {
             });
 
             const t3 = performance.now();
-            function metricsFragment(obj: Record<string, number>): string {
+            function metricsFragment(obj: Record<string, number|string>): string {
                 return `<div id="perf-metrics" style="position: absolute;right:0;top:0;background:#fff;z-index:1000;border:2px solid black;padding:10px;">${Object.entries(obj).map(([k, v]) =>
-                    `<p><strong>${escapeHtml(k)}</strong>: ${Number.isFinite(v) ? v.toFixed(3) : v}${k.toLowerCase().includes("links") || k.toLowerCase().includes("chunk") || k.toLowerCase().includes("html") ? "" : " ms"}</p>`).join("")}</div>`;
+                    `<p><strong>${escapeHtml(k)}</strong>: ${Number.isFinite(v) || typeof v !== 'string' ? (v as number).toFixed(3) : v}${k.toLowerCase().includes("links") || k.toLowerCase().includes("chunk") || k.toLowerCase().includes("html") ? "" : " ms"}</p>`).join("")}</div>`;
             }
 
             let rewriteFinished = false;
@@ -299,15 +319,16 @@ async function handleRequest(event: FetchEvent) {
                 body2.pipeThrough(rewritingStreamer),
                 () => {
                     rewriteFinished = true;
-                    perf["Rewrite stream finished"] = performance.now() - t3;
-                    perf["Granular rewrite duration"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                    perf["Links modified"] = linkStats.linksModified;
-                    perf["Total time since start"] = performance.now() - t0;
+                    perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
+                    perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                    perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["Capture stream estimated CPU time"] as number) + (perf["Extractor stream estimated CPU time"] as number) + (perf["Rewrite steam estimated CPU time"] as number) + (perf["Render extract templates"] as number) + (perf["Render no extract templates"] as number);
+                    perf["[MISC] Links modified"] = linkStats.linksModified;
+                    perf["[MISC] Total run time"] = performance.now() - t0;
                     // Populate size metrics
-                    perf["Original HTML size KB"] = htmlSizeStats.total / 1024;
-                    perf["HTML chunk count"] = htmlSizeStats.count;
-                    perf["Largest chunk bytes"] = htmlSizeStats.max;
-                    perf["Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
+                    perf["[HTML] HTML size in KB"] = htmlSizeStats.total / 1024;
+                    perf["[HTML] HTML chunk count"] = htmlSizeStats.count;
+                    perf["[HTML] Largest chunk bytes"] = htmlSizeStats.max;
+                    perf["[HTML] Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
                 }
             );
 
@@ -319,15 +340,16 @@ async function handleRequest(event: FetchEvent) {
                 flush(controller) {
                     if (!rewriteFinished) {
                         // ensure metrics populated even if onDone somehow not fired yet
-                        perf["Rewrite stream finished"] = performance.now() - t3;
-                        perf["Granular rewrite duration"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
-                        perf["Links modified"] = linkStats.linksModified;
-                        perf["Total time since start"] = performance.now() - t0;
+                        perf["[STREAMS] Rewrite stream wall time"] = performance.now() - t3;
+                        perf["[STREAMS] Rewrite steam estimated CPU time"] = (lastRewriteTime && firstRewriteTime) ? (lastRewriteTime - firstRewriteTime) : 0;
+                        perf["[TOTAL] Estimated TOTAL CPU time"] = (perf["Capture stream estimated CPU time"] as number) + (perf["Extractor stream estimated CPU time"] as number) + (perf["Rewrite steam estimated CPU time"] as number) + (perf["Render extract templates"] as number) + (perf["Render no extract templates"] as number);
+                        perf["[MISC] Links modified"] = linkStats.linksModified;
+                        perf["[MISC] Total run time"] = performance.now() - t0;
                         // Populate size metrics
-                        perf["Original HTML size KB"] = htmlSizeStats.total / 1024;
-                        perf["HTML chunk count"] = htmlSizeStats.count;
-                        perf["Largest chunk bytes"] = htmlSizeStats.max;
-                        perf["Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
+                        perf["[HTML] HTML size in KB"] = htmlSizeStats.total / 1024;
+                        perf["[HTML] HTML chunk count"] = htmlSizeStats.count;
+                        perf["[HTML] Largest chunk bytes"] = htmlSizeStats.max;
+                        perf["[HTML] Average chunk bytes"] = htmlSizeStats.count ? (htmlSizeStats.total / htmlSizeStats.count) : 0;
                     }
                     const fragment = metricsFragment(perf);
                     controller.enqueue(new TextEncoder().encode(fragment));
@@ -346,8 +368,8 @@ async function handleRequest(event: FetchEvent) {
             return new Response("Error fetching from backend", { status: 404 });
         }
     }
-    // perf["Total time since start"] = performance.now() - t0;
 
+    // perf["Total time since start"] = performance.now() - t0;
     return new Response(req.url, {
         status: 308,
         headers: {
